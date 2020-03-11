@@ -16,23 +16,37 @@ I2C device found at address 0x68  !
 LiquidCrystal_I2C lcd(0x27,20,4);
 
 // PIN settings
-#define DHT_PIN A0
-#define SOIL_MOISTURE_PIN_1 A1
-#define SOIL_MOISTURE_PIN_2 A2
-#define SOIL_MOISTURE_PIN_3 A3
-#define SOIL_MOISTURE_PIN_4 A4
+#define DHT_PIN                 A0
+#define SOIL_MOISTURE_1_PIN     A1
+#define SOIL_MOISTURE_2_PIN     A2
+#define SOIL_MOISTURE_3_PIN     A3
+#define SOIL_MOISTURE_4_PIN     A4
+#define RELAY_LIGHT_PIN         11
+#define RELAY_HUMIDIFIER_PIN    12
+#define RELAY_FAN_PIN           10
 
 // light on and off time
-#define LIGHT_INTERVAL      60000 // one minute
-#define LIGHT_ON            5
-#define LIGHT_OFF           23
+#define LIGHT_INTERVAL      600000 // 10 minute
+#define LIGHT_ON            5      // 5 o'clock
+#define LIGHT_OFF           23     // 23 o'clock
 
 // temperature and humidity constants
-#define HUM_TEMP_INTERVAL   10000 // 10 seconds
+#define HUM_TEMP_INTERVAL   5000 // 10 seconds
 #define TEMP_LOW            19
-#define TEMP_HIGH           21
-#define HUM_LOW             33
-#define HUM_HIGH            65
+#define TEMP_HIGH           28
+#define HUM_LOW             50
+#define HUM_HIGH            90
+
+// soil moisture values
+#define SOIL_MOIS_INTERVAL  2000 // 10 minuten
+#define SM_1_LOW            10
+#define SM_1_HIGH           90
+#define SM_2_LOW            10
+#define SM_2_HIGH           90
+#define SM_3_LOW            10
+#define SM_3_HIGH           90
+#define SM_4_LOW            10
+#define SM_4_HIGH           90
 
 // Temperature and Humidity Sensor
 #define DHTTYPE DHT22
@@ -41,10 +55,11 @@ DHT dht(DHT_PIN, DHTTYPE, 6);
 ThreadController controll = ThreadController();
 Thread lightControllThread = Thread();
 Thread humidControllThread = Thread();
+Thread soilMoistureThread = Thread();
 
-RelayModule* relay_1_1 = NULL;
-RelayModule* relay_1_2 = NULL;
-RelayModule* relay_2 = NULL;
+RelayModule* relay_light = NULL;
+RelayModule* relay_humidifier = NULL;
+RelayModule* relay_fan = NULL;
 
 void setup() {
   Serial.begin(9600);
@@ -53,20 +68,23 @@ void setup() {
   lightControllThread.onRun(lightCallback);
   lightControllThread.setInterval(LIGHT_INTERVAL);
   humidControllThread.onRun(controllTempAndHum);
-  humidControllThread.setInterval(HUMID_INTERVAL);
+  humidControllThread.setInterval(HUM_TEMP_INTERVAL);
+  soilMoistureThread.onRun(controllSoilMoisture);
+  soilMoistureThread.setInterval(SOIL_MOIS_INTERVAL);
 
   controll.add(&lightControllThread);
   controll.add(&humidControllThread);
+  controll.add(&soilMoistureThread);
 
-  relay_1_1 = new RelayModule(11); // Time-Controll Light
-  relay_1_2 = new RelayModule(12); // Humidity-Controll
-  relay_2 = new RelayModule(10); // Fan-Controll Zuluft
+  relay_light = new RelayModule(RELAY_LIGHT_PIN);
+  relay_humidifier = new RelayModule(RELAY_HUMIDIFIER_PIN);
+  relay_fan = new RelayModule(RELAY_FAN_PIN);
 
   dht.begin();
 
+  lcd.init();
   lcd.backlight();
-  lcd.setCursor(3, 0);
-  lcd.print("Welcome!");
+  lcd.clear();
 }
 
 void loop() {  
@@ -93,10 +111,32 @@ void lightCallback() {
   }
 }
 
-void controllTempAndHum() {
-  //int soilMoistureValue = analogRead(A1);
-  //int soilmoisturepercent = map(soilMoistureValue, 830, 500, 0, 100);
+void controllSoilMoisture(){
+  int value[4];
+  int percent[4];
+  value[0] = analogRead(SOIL_MOISTURE_1_PIN);
+  value[1] = analogRead(SOIL_MOISTURE_2_PIN);
+  value[2] = analogRead(SOIL_MOISTURE_3_PIN);
+  value[3] = analogRead(SOIL_MOISTURE_4_PIN);
 
+  for (int i = 0; i < 4; i++){
+    percent[i] = map(value[i], 830, 430, 0, 100);
+    if (percent[i] > 100) {
+      percent[i] = 100;
+    } else if (percent[i] < 0) {
+      percent[i] = 0;
+    }
+
+    lcd.setCursor(12, i);
+    lcd.print("M");
+    lcd.print(i);
+    lcd.print(" ");
+    lcd.print(percent[i]);
+    lcd.print("%");
+  }
+}
+
+void controllTempAndHum() {
   float hum = dht.readHumidity();
   float temp = dht.readTemperature();
 
@@ -118,9 +158,9 @@ void controllTempAndHum() {
  */
 void controllLight(float hour){
   if (hour >= LIGHT_ON && hour < LIGHT_OFF) {
-      turnRelayOn(relay_1_1);
+      turnRelayOn(relay_light);
     } else {
-      turnRelayOff(relay_1_1);
+      turnRelayOff(relay_light);
     }
 }
 
@@ -132,9 +172,9 @@ void controllLight(float hour){
  */
 void controllHumidity(float hum){
   if (hum < HUM_LOW) {
-    turnRelayOn(relay_1_2);
+    turnRelayOn(relay_humidifier);
   } else if (hum >= HUM_HIGH) {
-    turnRelayOff(relay_1_2);
+    turnRelayOff(relay_humidifier);
   }
 }
 
@@ -146,9 +186,9 @@ void controllHumidity(float hum){
  */
 void controllTemperature(float temp){
   if (temp > TEMP_HIGH) {
-    turnRelayOn(relay_2);
+    turnRelayOn(relay_fan);
   } else if (temp <= TEMP_LOW) {
-    turnRelayOff(relay_2);
+    turnRelayOff(relay_fan);
   }
 }
 
@@ -169,17 +209,11 @@ void turnRelayOff(RelayModule *relay){
  * fits perfectly in a 20 characters LCD display
  */
 void displayTempAndHum(float temp, float hum) {
-  char temp_buff[5], hum_buff[5];
-  dtostrf(temp, 2, 1, temp_buff);
-  dtostrf(hum, 2, 1, hum_buff);
-
-  char lcd_buff[20] = "Tmp: ";
-  strcat(lcd_buff, temp_buff);
-  strcat(lcd_buff, "°");
-  strcat(lcd_buff, "Hum: ");
-  strcat(lcd_buff, hum_buff);
-  strcat(lcd_buff, "%");
+  lcd.setCursor(0, 0);
+  lcd.print("T: ");
+  lcd.print(temp);
 
   lcd.setCursor(0, 1);
-  lcd.write(lcd_buff, 20);
+  lcd.print("H: ");
+  lcd.print(hum);
 }
